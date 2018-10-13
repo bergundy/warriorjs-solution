@@ -61,7 +61,7 @@ function hasPossibleRangeTarget(state: State) {
   return FAILURE;
 }
 
-const isSeverlyHurt = condition(({ warrior }: State) => healthPercent(warrior) < 0.5);
+const isSeverlyHurt = condition('isSeverlyHurt', ({ warrior }: State) => healthPercent(warrior) < 0.5);
 
 function meleeAttack({ warrior }: State) {
   warrior.attack('forward');
@@ -80,11 +80,12 @@ function trackDamageTaken(state: State) {
   return SUCCESS;
 }
 
-const isTakingDamage = condition(({ damageTaken }: State) => damageTaken > 0);
+const isTakingDamage = condition('isTakingDamage', ({ damageTaken }: State) => damageTaken > 0);
 
-const canWalk = condition(({ warrior, orientation }: State) => warrior.feel(orientation).isEmpty());
+const canWalk = condition('canWalk', ({ warrior, coveredLeft, coveredRight }: State) =>
+  warrior.feel('forward').isEmpty() || ((coveredLeft || coveredRight) && warrior.feel('forward').isWall()));
 
-const walk = succeeder(({ warrior, orientation }) => warrior.walk(orientation));
+const walk = succeeder(({ warrior }) => warrior.walk('forward'));
 
 function trackExplorationProgress(state: State) {
   const { warrior, orientation } = state;
@@ -100,21 +101,23 @@ function trackExplorationProgress(state: State) {
 }
 
 function updateHeading(state: State) {
+  const { coveredLeft, coveredRight, warrior } = state;
+  const isStairs = warrior.feel('forward').isStairs();
   state.heading = state.heading === 'forward'
-    ? (state.coveredRight ? 'backward' : 'forward')
-    : (state.coveredLeft ? 'forward' : 'backward');
+    ? ((isStairs && !coveredLeft) || coveredRight ? 'backward' : 'forward')
+    : ((isStairs && !coveredRight) || coveredLeft ? 'forward' : 'backward');
   return SUCCESS;
 }
 
 function pivot(state: State) {
-  state.warrior.pivot(state.heading);
+  state.warrior.pivot('backward');
   state.orientation = state.heading;
   return SUCCESS;
 }
 
-const isOrientented = condition(({ heading, orientation }: State) => heading === orientation);
+const isOrientented = condition('isOriented', ({ heading, orientation }: State) => heading === orientation);
 
-function runAway(state: State) {
+function retreat(state: State) {
   const { warrior } = state;
   if (hasMeleeTarget(warrior, 'forward') && !hasMeleeTarget(warrior, 'backward')) {
     warrior.walk('backward');
@@ -127,37 +130,10 @@ function runAway(state: State) {
   return FAILURE;
 }
 
-const canRescue = condition(({ warrior }: State) => isBound(warrior.feel('forward')));
-
-function rescue({ warrior }: State) {
-  warrior.rescue('forward');
-  return SUCCESS;
-}
-
-const explore = sequence(
-  sequence(
-    updateHeading,
-    selector(
-      sequence(
-        inverter(isOrientented),
-        pivot
-      ),
-      sequence(
-        canRescue,
-        rescue
-      ),
-      sequence(
-        canWalk,
-        walk
-      )
-    )
-  )
-);
-
 const combat = selector(
   sequence(
     isSeverlyHurt,
-    runAway
+    retreat
   ),
   sequence(
     hasMeleeTargetInFront,
@@ -169,11 +145,39 @@ const combat = selector(
   )
 );
 
+const rest = sequence(
+  condition('needsRest', ({ warrior }: State) => isHurt(warrior)),
+  succeeder(({ warrior }: State) => warrior.rest())
+);
+
+const rescue = sequence(
+  condition('canRescue', ({ warrior, orientation }: State) => isBound(warrior.feel('forward'))),
+  succeeder(({ warrior }: State) => warrior.rescue('forward'))
+);
+
+const explore = sequence(
+  sequence(
+    updateHeading,
+    selector(
+      sequence(
+        inverter(isOrientented),
+        pivot
+      ),
+      sequence(
+        canWalk,
+        walk
+      )
+    )
+  )
+);
+
 export const behavior = sequence(
   trackDamageTaken,
   trackExplorationProgress,
   selector(
     combat,
+    rest,
+    rescue,
     explore
   )
 );

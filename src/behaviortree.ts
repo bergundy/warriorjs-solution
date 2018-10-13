@@ -11,13 +11,15 @@ export const RUNNING = Result.RUNNING;
 export type BT<S> = (s: S) => Result;
 export type Predicate<S> = (state: S) => boolean;
 
-export function condition<S>(predicate: Predicate<S>) {
+export const runtime = {
+  log: (...args: any[]) => undefined,
+};
+
+export function condition<S>(name: string, predicate: Predicate<S>) {
   return (state) => {
-    if (predicate(state)) {
-      return SUCCESS;
-    } else {
-      return FAILURE;
-    }
+    const result = predicate(state) ? SUCCESS : FAILURE;
+    runtime.log(name, result);
+    return result;
   };
 }
 
@@ -26,6 +28,7 @@ export function sequence<S>(...nodes: Array<BT<S>>) {
     let result = SUCCESS;
     for (const node of nodes) {
       result = node(state);
+      runtime.log(node, result);
       if (result !== SUCCESS) {
         return result;
       }
@@ -39,6 +42,7 @@ export function selector<S>(...nodes: Array<BT<S>>) {
     let result = SUCCESS;
     for (const node of nodes) {
       result = node(state);
+      runtime.log(node, result);
       if (result !== FAILURE) {
         return result;
       }
@@ -58,7 +62,7 @@ export function inverter<S>(handler: BT<S>) {
   };
 }
 
-export function succeeder<S>(handler: BT<S>) {
+export function succeeder<S>(handler: (s: S) => any) {
   return (state: S): Result => {
     handler(state);
     return SUCCESS;

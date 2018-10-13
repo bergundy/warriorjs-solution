@@ -6,8 +6,10 @@ Player.js: dist/compiled.js
 
 build: Player.js
 
+speed=0.3
+
 play: build
-	warriorjs
+	warriorjs -t $(speed)
 
 .PHONY = build play
 .DEFAULT_GOAL = play

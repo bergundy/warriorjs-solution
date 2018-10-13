@@ -26,4 +26,5 @@ export interface Warrior {
   think(...args: any[]): void;
   pivot(dir: Direction): void;
   rescue(dir: Direction): void;
+  rest(): void;
 }
