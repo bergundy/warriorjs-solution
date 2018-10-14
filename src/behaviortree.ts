@@ -28,7 +28,7 @@ export function sequence<S>(...nodes: Array<BT<S>>) {
     let result = SUCCESS;
     for (const node of nodes) {
       result = node(state);
-      runtime.log(node, result);
+      // runtime.log(node, result);
       if (result !== SUCCESS) {
         return result;
       }
@@ -42,7 +42,7 @@ export function selector<S>(...nodes: Array<BT<S>>) {
     let result = SUCCESS;
     for (const node of nodes) {
       result = node(state);
-      runtime.log(node, result);
+      // runtime.log(node, result);
       if (result !== FAILURE) {
         return result;
       }
@@ -62,9 +62,10 @@ export function inverter<S>(handler: BT<S>) {
   };
 }
 
-export function succeeder<S>(handler: (s: S) => any) {
+export function succeeder<S>(name: string, handler: (s: S) => any) {
   return (state: S): Result => {
     handler(state);
+    runtime.log(name, SUCCESS);
     return SUCCESS;
   };
 }

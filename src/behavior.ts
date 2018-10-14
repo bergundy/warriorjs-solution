@@ -1,7 +1,4 @@
 import {
-  FAILURE,
-  RUNNING,
-  SUCCESS,
   condition,
   inverter,
   selector,
@@ -11,20 +8,26 @@ import {
 
 import {
   Direction,
+  Orientation,
   Warrior,
   Unit,
   Space,
   ALL_DIRECTIONS,
+  relativeOrientation,
 } from './types';
+
+import {
+  sum,
+} from './lib';
 
 export interface InternalState {
   prevHealth?: number;
   damageTaken: number;
   possibleRangeDirection?: Direction;
-  orientation: Direction;
+  orientation: Orientation;
   heading: Direction;
-  coveredLeft: boolean;
-  coveredRight: boolean;
+  seen: Space[];
+  threatLevel: number;
 }
 
 export type State = InternalState & {
@@ -38,131 +41,126 @@ const isBound = (space?: Space) => space && space.getUnit() ? space.getUnit()!.i
 const reverse = (direction: Direction) => direction === 'forward' ? 'backward' : 'forward';
 const nextUnit = (warrior: Warrior, direction: Direction) => warrior.look(direction).find((space) => space.isUnit());
 
-const hasMeleeTarget = (warrior: Warrior, direction: Direction) => isEnemy(warrior.feel('backward'));
+const hasMeleeTarget = (warrior: Warrior, direction: Direction) => isEnemy(warrior.feel(direction));
 const hasRangeTarget = (warrior: Warrior, direction: Direction) => isEnemy(nextUnit(warrior, direction));
 
-function hasMeleeTargetInFront({ warrior }: State) {
-  if (hasMeleeTarget(warrior, 'forward')) {
-    return SUCCESS;
-  } else {
-    return FAILURE;
-  }
-}
+const hasMeleeTargetAround = condition(
+  'hasMeleeTargetAround',
+  ({ warrior }: State) => ALL_DIRECTIONS.find((dir) => hasMeleeTarget(warrior, dir)) !== undefined);
 
-function hasPossibleRangeTarget(state: State) {
-  const { warrior } = state;
-  for (const direction of ALL_DIRECTIONS.reverse()) { // TODO: don't reverse
-    if (hasRangeTarget(warrior, direction)) {
-      state.possibleRangeDirection = direction;
-      return SUCCESS;
-    }
-  }
-  delete state.possibleRangeDirection;
-  return FAILURE;
-}
-
+// function hasPossibleRangeTarget(state: State) {
+//   const { warrior } = state;
+//   for (const direction of ALL_DIRECTIONS.reverse()) { // TODO: don't reverse
+//     if (hasRangeTarget(warrior, direction)) {
+//       state.possibleRangeDirection = direction;
+//       return SUCCESS;
+//     }
+//   }
+//   delete state.possibleRangeDirection;
+//   return FAILURE;
+// }
+//
 const isSeverlyHurt = condition('isSeverlyHurt', ({ warrior }: State) => healthPercent(warrior) < 0.5);
 
 function meleeAttack({ warrior }: State) {
-  warrior.attack('forward');
-  return SUCCESS;
+  const direction = ALL_DIRECTIONS.find((dir) => hasMeleeTarget(warrior, dir));
+  warrior.attack(direction!);
 }
 
-function rangeAttack({ warrior, possibleRangeDirection }: State) {
-  warrior.shoot(possibleRangeDirection!);
-  return SUCCESS;
-}
+// function rangeAttack({ warrior, possibleRangeDirection }: State) {
+//   warrior.shoot(possibleRangeDirection!);
+// }
 
 function trackDamageTaken(state: State) {
   const { prevHealth, warrior } = state;
   state.damageTaken = (prevHealth || warrior.maxHealth()) - warrior.health();
   state.prevHealth = warrior.health();
-  return SUCCESS;
 }
 
 const isTakingDamage = condition('isTakingDamage', ({ damageTaken }: State) => damageTaken > 0);
 
-const canWalk = condition('canWalk', ({ warrior, coveredLeft, coveredRight }: State) =>
-  warrior.feel('forward').isEmpty() || ((coveredLeft || coveredRight) && warrior.feel('forward').isWall()));
+const canWalk = condition('canWalk', ({ warrior, heading }: State) =>
+  warrior.feel(heading).isEmpty() || warrior.feel(heading).isStairs());
 
-const walk = succeeder(({ warrior }) => warrior.walk('forward'));
+const walk = succeeder('walk', ({ warrior, heading }) => warrior.walk(heading));
+
+// const canWalk = condition('canWalk', ({ warrior }: State) =>
+//   warrior.feel('forward').isEmpty() || warrior.feel('forward').isStairs());
+//
+// const walk = succeeder('walk', ({ warrior }) => warrior.walk('forward'));
 
 function trackExplorationProgress(state: State) {
   const { warrior, orientation } = state;
-  state.coveredLeft = state.coveredLeft || (orientation === 'forward'
-    ? warrior.feel('backward').isWall()
-    : warrior.feel('forward').isWall()
-  );
-  state.coveredRight = state.coveredRight || (orientation === 'forward'
-    ? warrior.feel('forward').isWall()
-    : warrior.feel('backward').isWall()
-  );
-  return SUCCESS;
 }
 
 function updateHeading(state: State) {
-  const { coveredLeft, coveredRight, warrior } = state;
-  const isStairs = warrior.feel('forward').isStairs();
-  state.heading = state.heading === 'forward'
-    ? ((isStairs && !coveredLeft) || coveredRight ? 'backward' : 'forward')
-    : ((isStairs && !coveredRight) || coveredLeft ? 'forward' : 'backward');
-  return SUCCESS;
+  const { warrior } = state;
+  state.heading = warrior.directionOfStairs();
 }
 
 function pivot(state: State) {
-  state.warrior.pivot('backward');
-  state.orientation = state.heading;
-  return SUCCESS;
+  state.warrior.pivot(state.heading);
+  state.orientation = relativeOrientation(state.orientation, state.heading);
 }
 
 const isOrientented = condition('isOriented', ({ heading, orientation }: State) => heading === orientation);
 
-function retreat(state: State) {
+const isSurrounded = condition('isSurrounded', ({ warrior }: State) =>
+  ALL_DIRECTIONS.find((dir) => warrior.feel(dir).isEmpty()) !== undefined);
+
+function retreat({ warrior }: State) {
+  const direction = ALL_DIRECTIONS.find((dir) => warrior.feel(dir).isEmpty());
+  if (direction !== undefined) {
+    warrior.walk(direction);
+    return true;
+  }
+  return false;
+}
+
+function trackThreatLevel(state: State) {
   const { warrior } = state;
-  if (hasMeleeTarget(warrior, 'forward') && !hasMeleeTarget(warrior, 'backward')) {
-    warrior.walk('backward');
-    return SUCCESS;
-  }
-  if (hasMeleeTarget(warrior, 'backward') && !hasMeleeTarget(warrior, 'forward')) {
-    warrior.walk('forward');
-    return SUCCESS;
-  }
-  return FAILURE;
+  state.threatLevel = sum(ALL_DIRECTIONS.map((dir) => isEnemy(warrior.feel(dir)) ? 1 : 0));
 }
 
 const combat = selector(
   sequence(
     isSeverlyHurt,
-    retreat
+    condition('retreat', retreat)
   ),
   sequence(
-    hasMeleeTargetInFront,
-    meleeAttack
-  ),
-  sequence(
-    hasPossibleRangeTarget,
-    rangeAttack
+    hasMeleeTargetAround,
+    succeeder('meleeAttack', meleeAttack)
+  // ),
+  // sequence(
+  //   hasPossibleRangeTarget,
+  //   rangeAttack
   )
 );
 
 const rest = sequence(
+  inverter(condition('threatened', ({ threatLevel }: State) => threatLevel > 0)),
   condition('needsRest', ({ warrior }: State) => isHurt(warrior)),
-  succeeder(({ warrior }: State) => warrior.rest())
+  succeeder('rest', ({ warrior }: State) => warrior.rest())
 );
 
 const rescue = sequence(
-  condition('canRescue', ({ warrior, orientation }: State) => isBound(warrior.feel('forward'))),
-  succeeder(({ warrior }: State) => warrior.rescue('forward'))
+  condition(
+    'canRescue',
+    ({ warrior }: State) => ALL_DIRECTIONS.find((dir) => isBound(warrior.feel(dir))) !== undefined),
+  succeeder('rescue', ({ warrior }: State) => {
+    const direction = ALL_DIRECTIONS.find((dir) => isBound(warrior.feel(dir)));
+    warrior.rescue(direction!);
+  })
 );
 
 const explore = sequence(
   sequence(
-    updateHeading,
+    succeeder('updateHeading', updateHeading),
     selector(
-      sequence(
-        inverter(isOrientented),
-        pivot
-      ),
+      // sequence(
+      //   inverter(isOrientented),
+      //   succeeder(pivot)
+      // ),
       sequence(
         canWalk,
         walk
@@ -171,13 +169,26 @@ const explore = sequence(
   )
 );
 
+export const updateState = sequence(
+  succeeder('trackDamageTaken', trackDamageTaken),
+  succeeder('trackExplorationProgress', trackExplorationProgress),
+  succeeder('trackThreatLevel', trackThreatLevel)
+);
+
+export const threatLevelHigh = condition(
+  'threatLevelHigh', ({ threatLevel }) => threatLevel >= 2);
+
 export const behavior = sequence(
-  trackDamageTaken,
-  trackExplorationProgress,
+  updateState,
   selector(
-    combat,
-    rest,
+    sequence(
+      threatLevelHigh,
+      inverter(isSurrounded),
+      condition('retreat', retreat)
+    ),
     rescue,
+    rest,
+    combat,
     explore
   )
 );
