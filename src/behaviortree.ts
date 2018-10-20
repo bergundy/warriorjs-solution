@@ -16,7 +16,7 @@ export const runtime = {
 };
 
 export function condition<S>(name: string, predicate: Predicate<S>) {
-  return (state) => {
+  return (state: S) => {
     const result = predicate(state) ? SUCCESS : FAILURE;
     runtime.log(name, result);
     return result;

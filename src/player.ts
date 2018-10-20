@@ -7,7 +7,7 @@ export class Player {
   constructor() {
     this.state = {
       damageTaken: 0,
-      threatLevel: 0,
+      threats: new Map(),
       heading: 'backward',
       orientation: 'right',
       seen: [],

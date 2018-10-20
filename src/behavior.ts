@@ -14,10 +14,12 @@ import {
   Space,
   ALL_DIRECTIONS,
   relativeOrientation,
+  nextDirection,
 } from './types';
 
 import {
   sum,
+  zip,
 } from './lib';
 
 export interface InternalState {
@@ -27,7 +29,7 @@ export interface InternalState {
   orientation: Orientation;
   heading: Direction;
   seen: Space[];
-  threatLevel: number;
+  threats: Map<Direction, boolean>;
 }
 
 export type State = InternalState & {
@@ -62,6 +64,19 @@ const hasMeleeTargetAround = condition(
 //
 const isSeverlyHurt = condition('isSeverlyHurt', ({ warrior }: State) => healthPercent(warrior) < 0.5);
 
+function bind({ warrior }: State) {
+  // Prefer not to bind forward
+  const direction = [...ALL_DIRECTIONS].reverse().find((dir) =>
+    hasMeleeTarget(warrior, dir)
+    && !warrior.feel(dir).getUnit()!.isBound()
+  );
+  if (direction) {
+    warrior.bind(direction!);
+    return true;
+  }
+  return false;
+}
+
 function meleeAttack({ warrior }: State) {
   const direction = ALL_DIRECTIONS.find((dir) => hasMeleeTarget(warrior, dir));
   warrior.attack(direction!);
@@ -82,20 +97,40 @@ const isTakingDamage = condition('isTakingDamage', ({ damageTaken }: State) => d
 const canWalk = condition('canWalk', ({ warrior, heading }: State) =>
   warrior.feel(heading).isEmpty() || warrior.feel(heading).isStairs());
 
-const walk = succeeder('walk', ({ warrior, heading }) => warrior.walk(heading));
-
-// const canWalk = condition('canWalk', ({ warrior }: State) =>
-//   warrior.feel('forward').isEmpty() || warrior.feel('forward').isStairs());
-//
-// const walk = succeeder('walk', ({ warrior }) => warrior.walk('forward'));
+const walk = succeeder('walk', ({ warrior, heading }: State) => warrior.walk(heading));
 
 function trackExplorationProgress(state: State) {
   const { warrior, orientation } = state;
 }
+const hasTickingCaptive = (space: Space) => space.isUnit() && space.getUnit()!.isUnderEffect('ticking');
+
+function compareUnitSpaces(sp1: Space, sp2: Space) {
+  const priority1 = 1 - Number(hasTickingCaptive(sp1));
+  const priority2 = 1 - Number(hasTickingCaptive(sp2));
+  return priority1 - priority2;
+}
 
 function updateHeading(state: State) {
   const { warrior } = state;
-  state.heading = warrior.directionOfStairs();
+  const spacesWithUnits = warrior.listen().sort(compareUnitSpaces);
+  if (spacesWithUnits.length > 0) {
+    const space = spacesWithUnits[0];
+    const direction = warrior.directionOf(space);
+    if (!warrior.feel(direction).isStairs() && (!hasTickingCaptive(space) || warrior.feel(direction).isEmpty())) {
+      state.heading = direction;
+    } else {
+      let dir = direction;
+      do {
+        dir = nextDirection(dir);
+        if (warrior.feel(dir).isEmpty()) {
+          state.heading = dir;
+          break;
+        }
+      } while (dir !== direction);
+    }
+  } else {
+    state.heading = warrior.directionOfStairs();
+  }
 }
 
 function pivot(state: State) {
@@ -119,27 +154,46 @@ function retreat({ warrior }: State) {
 
 function trackThreatLevel(state: State) {
   const { warrior } = state;
-  state.threatLevel = sum(ALL_DIRECTIONS.map((dir) => isEnemy(warrior.feel(dir)) ? 1 : 0));
+  state.threats = new Map(zip(
+    ALL_DIRECTIONS,
+    ALL_DIRECTIONS
+    .map((dir) => warrior.feel(dir))
+    .map((space) => space.getUnit())
+    .map((unit) => unit !== undefined && unit.isEnemy() && !unit.isBound())
+  ));
 }
 
+export const updateState = sequence(
+  succeeder('trackDamageTaken', trackDamageTaken),
+  succeeder('trackExplorationProgress', trackExplorationProgress),
+  succeeder('trackThreatLevel', trackThreatLevel)
+);
+
+export const threatLevel = ({ threats }: State) => sum(...threats.values());
+
+export const threatLevelHigh = condition('threatLevelHigh', (state: State) => threatLevel(state) >= 2);
+
 const combat = selector(
-  sequence(
-    isSeverlyHurt,
-    condition('retreat', retreat)
-  ),
+  // sequence(
+  //   isSeverlyHurt,
+  //   condition('retreat', retreat)
+  // ),
   sequence(
     hasMeleeTargetAround,
     succeeder('meleeAttack', meleeAttack)
+  )
   // ),
   // sequence(
   //   hasPossibleRangeTarget,
   //   rangeAttack
-  )
 );
 
 const rest = sequence(
-  inverter(condition('threatened', ({ threatLevel }: State) => threatLevel > 0)),
+  inverter(condition('threatened', (state: State) => threatLevel(state) > 0)),
   condition('needsRest', ({ warrior }: State) => isHurt(warrior)),
+  condition('enemiesLeft', ({ warrior }: State) => warrior.listen()
+    .filter((s) => s.isUnit() && s.getUnit()!.isEnemy())
+    .length > 0),
   succeeder('rest', ({ warrior }: State) => warrior.rest())
 );
 
@@ -169,26 +223,26 @@ const explore = sequence(
   )
 );
 
-export const updateState = sequence(
-  succeeder('trackDamageTaken', trackDamageTaken),
-  succeeder('trackExplorationProgress', trackExplorationProgress),
-  succeeder('trackThreatLevel', trackThreatLevel)
-);
-
-export const threatLevelHigh = condition(
-  'threatLevelHigh', ({ threatLevel }) => threatLevel >= 2);
-
 export const behavior = sequence(
   updateState,
   selector(
     sequence(
-      threatLevelHigh,
-      inverter(isSurrounded),
-      condition('retreat', retreat)
+      condition('hasTickingCaptives', ({ warrior }: State) => warrior.listen().find(hasTickingCaptive) !== undefined),
+      selector(
+        rescue,
+        explore
+      )
     ),
-    rescue,
+    sequence(
+      threatLevelHigh,
+      condition('bind', bind)
+    ),
+    //   inverter(isSurrounded),
+    //   condition('retreat', retreat)
+    // ),
     rest,
     combat,
+    rescue,
     explore
   )
 );

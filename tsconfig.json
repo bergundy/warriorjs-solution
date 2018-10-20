@@ -11,7 +11,7 @@
         "experimentalDecorators": true,
         "downlevelIteration": true,
         "sourceMap": false,
-        "strictNullChecks": true,
+        "strict": true,
         "outFile": "dist/compiled.js"
     },
     "include": [
